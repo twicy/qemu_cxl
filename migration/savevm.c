@@ -246,6 +246,7 @@ typedef struct SaveStateEntry {
     int load_section_id;
     const SaveVMHandlers *ops;
     const VMStateDescription *vmsd;
+    // User data?
     void *opaque;
     CompatEntry *compat;
     int is_ram;
@@ -1375,8 +1376,9 @@ int qemu_savevm_state_setup(QEMUFile *f, Error **errp)
                 continue;
             }
         }
+        // coincide with qemu_loadvm_state_main.QEMU_VM_SECTION_START
         save_section_header(f, se, QEMU_VM_SECTION_START);
-
+        // .save_setup = ram_save_setup,
         ret = se->ops->save_setup(f, se->opaque, errp);
         save_section_footer(f, se);
         if (ret < 0) {
@@ -2776,6 +2778,7 @@ static int qemu_loadvm_state_header(QEMUFile *f)
     unsigned int v;
     int ret;
 
+    // there is an internal file pointer
     v = qemu_get_be32(f);
     if (v != QEMU_VM_FILE_MAGIC) {
         error_report("Not a migration stream");
@@ -3004,6 +3007,7 @@ retry:
         switch (section_type) {
         case QEMU_VM_SECTION_START:
         case QEMU_VM_SECTION_FULL:
+            // TODO:
             ret = qemu_loadvm_section_start_full(f, section_type);
             if (ret < 0) {
                 goto out;
@@ -3017,6 +3021,7 @@ retry:
             }
             break;
         case QEMU_VM_COMMAND:
+            // TODO:
             ret = loadvm_process_command(f);
             trace_qemu_loadvm_state_section_command(ret);
             if ((ret < 0) || (ret == LOADVM_QUIT)) {
@@ -3075,11 +3080,17 @@ int qemu_loadvm_state(QEMUFile *f)
 
     qemu_loadvm_thread_pool_create(mis);
 
+    // just checking  ... headers, like MAGIC number, etc
+    // read 8 bytes
     ret = qemu_loadvm_state_header(f);
     if (ret) {
         return ret;
     }
 
+    // Load state of device se->idstr
+    // executing ram_load_setup for RAM
+    // XBZRLE.decoded_buf = g_malloc(TARGET_PAGE_SIZE);
+    // rb->receivedmap = bitmap_new [for each ramblock in global variable ram_list]
     if (qemu_loadvm_state_setup(f, &local_err) != 0) {
         error_report_err(local_err);
         return -EINVAL;

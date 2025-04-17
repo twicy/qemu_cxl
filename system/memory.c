@@ -2976,6 +2976,7 @@ bool memory_global_dirty_log_start(unsigned int flags, Error **errp)
             return false;
         }
 
+        // using KVM components
         memory_region_transaction_begin();
         memory_region_update_pending = true;
         memory_region_transaction_commit();

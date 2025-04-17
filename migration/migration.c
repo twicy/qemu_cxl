@@ -3416,11 +3416,13 @@ static MigIterateState migration_iteration_run(MigrationState *s)
     bool in_postcopy = s->state == MIGRATION_STATUS_POSTCOPY_ACTIVE;
     bool can_switchover = migration_can_switchover(s);
 
+    // se->ops->state_pending_estimate
     qemu_savevm_state_pending_estimate(&must_precopy, &can_postcopy);
     pending_size = must_precopy + can_postcopy;
     trace_migrate_pending_estimate(pending_size, must_precopy, can_postcopy);
 
     if (pending_size < s->threshold_size) {
+        // se->ops->state_pending_exact
         qemu_savevm_state_pending_exact(&must_precopy, &can_postcopy);
         pending_size = must_precopy + can_postcopy;
         trace_migrate_pending_exact(pending_size, must_precopy, can_postcopy);
@@ -3435,6 +3437,8 @@ static MigIterateState migration_iteration_run(MigrationState *s)
     /* Still a significant amount to transfer */
     if (!in_postcopy && must_precopy <= s->threshold_size && can_switchover &&
         qatomic_read(&s->start_postcopy)) {
+        // TODO: when start to post copy
+        // Switch from normal iteration to postcopy
         if (postcopy_start(s, &local_err)) {
             migrate_set_error(s, local_err);
             error_report_err(local_err);
@@ -3640,6 +3644,7 @@ static void *migration_thread(void *opaque)
     Error *local_err = NULL;
     int ret;
 
+    // just adding current thread to a global migration_threads list
     thread = migration_threads_add(MIGRATION_THREAD_SRC_MAIN,
                                    qemu_get_thread_id());
 
@@ -3652,6 +3657,8 @@ static void *migration_thread(void *opaque)
     }
 
     bql_lock();
+    // QEMU Machine Protocol (QMP) is a JSON-based protocol
+    // using a "JSONWriter" to write qemu vm magic number, version number
     qemu_savevm_state_header(s->to_dst_file);
     bql_unlock();
 
@@ -3667,12 +3674,14 @@ static void *migration_thread(void *opaque)
         qemu_savevm_send_ping(s->to_dst_file, 1);
     }
 
+    // return migrate_postcopy_ram() || migrate_dirty_bitmaps();
     if (migrate_postcopy()) {
         /*
          * Tell the destination that we *might* want to do postcopy later;
          * if the other end can't do postcopy it should fail now, nice and
          * early.
          */
+        // "advise"
         qemu_savevm_send_postcopy_advise(s->to_dst_file);
     }
 
@@ -3687,9 +3696,13 @@ static void *migration_thread(void *opaque)
     }
 
     bql_lock();
+    // savevm_state is a global variable
+    // iterate over a queue of handlers for ram, cpu, device ...
+    // ret = se->ops->save_setup(f, se->opaque, errp);
     ret = qemu_savevm_state_setup(s->to_dst_file, &local_err);
     bql_unlock();
 
+    // wait for failover devices to be completely unplugged
     qemu_savevm_wait_unplug(s, MIGRATION_STATUS_SETUP,
                                MIGRATION_STATUS_ACTIVE);
 
@@ -3709,8 +3722,10 @@ static void *migration_thread(void *opaque)
 
     trace_migration_thread_setup_complete();
 
+    // s->state == MIGRATION_STATUS_ACTIVE || MIGRATION_STATUS_POSTCOPY_ACTIVE
     while (migration_is_active()) {
         if (urgent || !migration_rate_exceeded(s->to_dst_file)) {
+            // Return true if continue to the next iteration directly,
             MigIterateState iter_state = migration_iteration_run(s);
             if (iter_state == MIG_ITERATE_SKIP) {
                 continue;
@@ -3727,6 +3742,7 @@ static void *migration_thread(void *opaque)
         if (thr_error == MIG_THR_ERR_FATAL) {
             /* Stop migration */
             break;
+        // /* Detected error, but resumed successfully */
         } else if (thr_error == MIG_THR_ERR_RECOVERED) {
             /*
              * Just recovered from a e.g. network failure, reset all
@@ -3868,6 +3884,7 @@ static void *bg_migration_thread(void *opaque)
         MigIterateState iter_state = bg_migration_iteration_run(s);
         if (iter_state == MIG_ITERATE_SKIP) {
             continue;
+        // migration completion?
         } else if (iter_state == MIG_ITERATE_BREAK) {
             break;
         }
@@ -3918,9 +3935,14 @@ void migration_connect(MigrationState *s, Error *error_in)
      */
     migrate_error_free(s);
 
+    // s->parameters.downtime_limit
     s->expected_downtime = migrate_downtime_limit();
     if (error_in) {
+        // only these two cases
+        // MIGRATION_STATUS_SETUP=>MIGRATION_STATUS_FAILED
+        // MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP=>MIGRATION_STATUS_POSTCOPY_PAUSED
         migration_connect_set_error(s, error_in);
+        // MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP
         if (resume) {
             /*
              * Don't do cleanup for resume if channel is invalid, but only dump
@@ -3930,17 +3952,20 @@ void migration_connect(MigrationState *s, Error *error_in)
              * explicitly.
              */
             error_report_err(error_copy(s->error));
-        } else {
+        } else { // MIGRATION_STATUS_SETUP
             migration_cleanup(s);
         }
         return;
     }
 
+    // MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP
     if (resume) {
         /* This is a resumed migration */
+        // s->parameters.max_postcopy_bandwidth;
         rate_limit = migrate_max_postcopy_bandwidth();
     } else {
         /* This is a fresh new migration */
+        // s->parameters.max_bandwidth;
         rate_limit = migrate_max_bandwidth();
 
         /* Notify before starting migration thread */
@@ -3950,6 +3975,7 @@ void migration_connect(MigrationState *s, Error *error_in)
     }
 
     migration_rate_set(rate_limit);
+    // Set the blocking state of the QEMUFile.
     qemu_file_set_blocking(s->to_dst_file, true);
 
     /*
@@ -3957,7 +3983,11 @@ void migration_connect(MigrationState *s, Error *error_in)
      * precopy, only if user specified "return-path" capability would
      * QEMU uses the return path.
      */
+    // s->capabilities[*]
+    // TODO: when are these capabilities set
     if (migrate_postcopy_ram() || migrate_return_path()) {
+        // ms->rp_state.from_dst_file = qemu_file_get_return_path(ms->to_dst_file);
+        // create thread: source_return_path_thread (Handles messages sent on the return path towards the source VM)
         if (open_return_path_on_source(s)) {
             error_setg(&local_err, "Unable to open return-path for postcopy");
             goto fail;
@@ -3972,15 +4002,17 @@ void migration_connect(MigrationState *s, Error *error_in)
     if (migrate_postcopy_preempt() && s->preempt_pre_7_2) {
         postcopy_preempt_setup(s);
     }
-
+    // MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP
     if (resume) {
         /* Wakeup the main migration thread to do the recovery */
         migrate_set_state(&s->state, MIGRATION_STATUS_POSTCOPY_RECOVER_SETUP,
                           MIGRATION_STATUS_POSTCOPY_RECOVER);
+        // get the semaphhore
         qemu_sem_post(&s->postcopy_pause_sem);
         return;
     }
 
+    // s->parameters.mode == MIG_MODE_CPR_REBOOT || MIG_MODE_CPR_TRANSFER
     if (migrate_mode_is_cpr(s)) {
         ret = migration_stop_vm(s, RUN_STATE_FINISH_MIGRATE);
         if (ret < 0) {
@@ -4001,6 +4033,7 @@ void migration_connect(MigrationState *s, Error *error_in)
         qemu_thread_create(&s->thread, MIGRATION_THREAD_SNAPSHOT,
                 bg_migration_thread, s, QEMU_THREAD_JOINABLE);
     } else {
+        // CREATE THE MIGRATION_THREAD!!!
         qemu_thread_create(&s->thread, MIGRATION_THREAD_SRC_MAIN,
                 migration_thread, s, QEMU_THREAD_JOINABLE);
     }

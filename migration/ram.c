@@ -2723,6 +2723,7 @@ static bool ram_init_bitmaps(RAMState *rs, Error **errp)
     qemu_mutex_lock_ramlist();
 
     WITH_RCU_READ_LOCK_GUARD() {
+        // init bitmaps in the RAMBlock
         ram_list_init_bitmaps();
         /* We don't use dirty log with background snapshots */
         if (!migrate_background_snapshot()) {
@@ -2730,6 +2731,7 @@ static bool ram_init_bitmaps(RAMState *rs, Error **errp)
             if (!ret) {
                 goto out_unlock;
             }
+            // migration_bitmap_sync(ram_state, last_stage);=>ramblock_sync_dirty_bitmap
             migration_bitmap_sync_precopy(false);
         }
     }
@@ -2954,6 +2956,7 @@ static int ram_save_setup(QEMUFile *f, void *opaque, Error **errp)
 
     /* migration has already setup the bitmap, reuse it. */
     if (!migration_in_colo_state()) {
+        // ram_init_all->ram_init_bitmaps
         if (ram_init_all(rsp, errp) != 0) {
             return -1;
         }
